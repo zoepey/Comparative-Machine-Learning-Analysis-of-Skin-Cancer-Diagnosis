@@ -1,0 +1,709 @@
+---
+title: "STATS101C Final Classification Project"
+author: "Jessica Xiao, Zoe Chan, Bebel Yen, Victoria Yee, Kaitlyn Wu"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r}
+# Load libraries
+library(tidyverse)
+library(janitor)
+library(ggplot2)
+library(GGally)
+library(skimr)
+library(naniar)
+library(gridExtra)
+
+# Read train and test data
+train <- read_csv("SkinCancerTrain.csv")
+test  <- read_csv("SkinCancerTestNoY.csv")
+
+# Ensure Cancer is a factor
+train$Cancer <- as.factor(train$Cancer)
+
+# Variables we are dropping
+drop_vars <- c(
+  "ID",
+  "zip_code_last_digit",
+  "favorite_cuisine",
+  "music_genre",
+  "preferred_shoe_type",
+  "phone_brand",
+  "monthly_screen_time_minutes",
+  "uses_smartwatch",
+  "desk_height_cm",
+  "commute_minutes",
+  "participates_outdoor_sports",
+  "years_lived_at_address",
+  "pets",
+  "favorite_color",
+  "residence_lat", 
+  "residence_lon",
+  "income",
+  "education"
+)
+```
+```{r}
+# Count missing values per variable
+missing_summary <- train %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "n_missing") %>%
+  arrange(desc(n_missing))
+
+missing_summary
+```
+
+```{r}
+# Clean training data
+train_clean <- train %>% 
+  select(-all_of(drop_vars)) %>%
+  mutate(
+    Cancer = factor(Cancer, levels = c("Benign", "Malignant")),
+    across(where(is.character), as.factor)
+  )
+
+# Clean test data
+test_clean <- test %>% 
+  select(-any_of(drop_vars)) %>%
+  mutate(across(where(is.character), as.factor))
+```
+
+```{r}
+# IMPUTATION - ensure there are no NAs in data
+
+# Calculate imputation values from TRAINING data only
+train_medians <- train_clean %>%
+  select(where(is.numeric)) %>%
+  summarise(across(everything(), ~median(., na.rm = TRUE)))
+
+train_modes <- train_clean %>%
+  select(where(is.factor), -Cancer) %>%
+  summarise(across(everything(), ~names(sort(table(.), decreasing = TRUE))[1]))
+
+# Impute training data
+train_final <- train_clean
+for (col in names(train_medians)) {
+  if (col %in% names(train_final)) {
+    train_final[[col]][is.na(train_final[[col]])] <- train_medians[[col]]
+  }
+}
+
+for (col in names(train_modes)) {
+  if (col %in% names(train_final)) {
+    train_final[[col]][is.na(train_final[[col]])] <- train_modes[[col]]
+    train_final[[col]] <- factor(train_final[[col]], levels = levels(train_clean[[col]]))
+  }
+}
+
+# Impute test data using TRAINING statistics
+test_final <- test_clean
+for (col in names(train_medians)) {
+  if (col %in% names(test_final)) {
+    test_final[[col]][is.na(test_final[[col]])] <- train_medians[[col]]
+  }
+}
+
+for (col in names(train_modes)) {
+  if (col %in% names(test_final)) {
+    test_final[[col]][is.na(test_final[[col]])] <- train_modes[[col]]
+  }
+}
+
+# Align factor levels between train and test
+for (col in intersect(names(train_final), names(test_final))) {
+  if (is.factor(train_final[[col]])) {
+    test_final[[col]] <- factor(test_final[[col]], 
+                                 levels = levels(train_final[[col]]))
+  }
+}
+
+# Verify no missing values remain
+cat("\nMissing values in training after imputation:\n")
+print(colSums(is.na(train_final)))
+
+cat("\nMissing values in test after imputation:\n")
+print(colSums(is.na(test_final)))
+
+cat("\nFinal training dimensions:", dim(train_final), "\n")
+cat("Final test dimensions:", dim(test_final), "\n")
+```
+
+
+## EDA
+```{r}
+ggplot(train_clean, aes(x = Cancer, fill = Cancer)) +
+  geom_bar() +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.3) +
+  labs(title = "Distribution of Cancer Status", x = "Cancer", y = "Count") +
+  theme_minimal()
+```
+
+```{r}
+numeric_vars <- train_clean %>%
+  select(age, avg_daily_uv, BMI, lesion_size_mm, sunburns_last_year)
+
+# Histograms
+p1 <- ggplot(train_clean, aes(x = age)) +
+  geom_histogram(bins = 30) +
+  theme_minimal() +
+  labs(title = "Age Distribution")
+
+p2 <- ggplot(train_clean, aes(x = avg_daily_uv)) +
+  geom_histogram(bins = 30) +
+  theme_minimal() +
+  labs(title = "Average Daily UV Index")
+
+p3 <- ggplot(train_clean, aes(x = BMI)) +
+  geom_histogram(bins = 30) +
+  theme_minimal() +
+  labs(title = "BMI Distribution")
+
+p4 <- ggplot(train_clean, aes(x = lesion_size_mm)) +
+  geom_histogram(bins = 30) +
+  theme_minimal() +
+  labs(title = "Lesion Size (mm)")
+
+grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+```{r}
+# UV vs Cancer
+ggplot(train_clean, aes(x = Cancer, y = avg_daily_uv, fill = Cancer)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Average Daily UV by Cancer Status",
+       y = "Average Daily UV Index")
+
+# BMI vs Cancer
+ggplot(train_clean, aes(x = Cancer, y = BMI, fill = Cancer)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "BMI by Cancer Status",
+       y = "BMI")
+
+# Lesion size vs Cancer
+ggplot(train_clean, aes(x = Cancer, y = lesion_size_mm, fill = Cancer)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Lesion Size by Cancer Status",
+       y = "Lesion Size (mm)")
+```
+
+```{r}
+# Gender
+ggplot(train_clean, aes(x = gender, fill = Cancer)) +
+  geom_bar(position = "fill") +
+  theme_minimal() +
+  labs(title = "Cancer Proportion by Gender", y = "Proportion")
+
+# Skin tone
+ggplot(train_clean, aes(x = skin_tone, fill = Cancer)) +
+  geom_bar(position = "fill") +
+  theme_minimal() +
+  labs(title = "Cancer Proportion by Skin Tone", y = "Proportion") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Tanning bed use
+ggplot(train_clean, aes(x = tanning_bed_use, fill = Cancer)) +
+  geom_bar(position = "fill") +
+  theme_minimal() +
+  labs(title = "Cancer Proportion by Tanning Bed Use", y = "Proportion")
+
+# Family history
+ggplot(train_clean, aes(x = family_history, fill = Cancer)) +
+  geom_bar(position = "fill") +
+  theme_minimal() +
+  labs(title = "Cancer Proportion by Family History of Cancer", y = "Proportion")
+```
+
+```{r}
+# Latitude and Longitude
+
+library(ggplot2)
+library(maps)
+
+us <- map_data("state")
+
+ggplot() +
+  geom_polygon(data = us,
+               aes(x = long, y = lat, group = group),
+               fill = "gray90", color = "white") +
+  geom_point(data = train,
+             aes(x = residence_lon,
+                 y = residence_lat,
+                 color = Cancer),
+             alpha = 0.7, size = 2) +
+  coord_fixed(1.3) +
+  labs(title = "Geographic Distribution of Training Data",
+       x = "Longitude", y = "Latitude") +
+  theme_minimal()
+
+summary(train$residence_lat)
+summary(train$residence_lon)
+```
+
+
+## Candidate Models
+```{r}
+library(tidyverse)
+library(rpart)
+library(randomForest)
+library(xgboost)
+library(class)
+library(pROC)
+```
+
+```{r}
+# BASELINE ACCURACY CHECK
+
+cat("\n=== BASELINE CHECK ===\n")
+table(train_final$Cancer)
+prop.table(table(train_final$Cancer))
+
+baseline_acc <- max(prop.table(table(train_final$Cancer)))
+cat("Baseline accuracy:", round(baseline_acc, 4), "\n") # models must be greater than this
+```
+
+```{r}
+# Create validation split from training for model evaluation
+set.seed(123)
+val_idx <- sample(1:nrow(train_final), 0.2 * nrow(train_final))
+val_set <- train_final[val_idx, ]
+train_subset <- train_final[-val_idx, ]
+
+cat("Training subset for validation:", nrow(train_subset), "observations\n")
+cat("Validation set:", nrow(val_set), "observations\n")
+```
+
+### MODEL 1: LOGISTIC REGRESSION
+```{r}
+cat("\n=== LOGISTIC REGRESSION ===\n")
+model_logit <- glm(Cancer ~ ., data = train_subset, family = binomial)
+
+# Predictions
+prob_logit_val <- predict(model_logit, newdata = val_set, type = "response")
+pred_logit_val <- factor(ifelse(prob_logit_val > 0.5, "Malignant", "Benign"),
+                         levels = c("Benign", "Malignant"))
+
+# Evaluation
+conf_logit <- table(Predicted = pred_logit_val, Actual = val_set$Cancer)
+acc_logit <- sum(diag(conf_logit)) / sum(conf_logit)
+roc_logit <- roc(val_set$Cancer, prob_logit_val, levels = c("Benign", "Malignant"))
+
+# MSE
+y_true <- ifelse(val_set$Cancer == "Malignant", 1, 0)
+mse_logit <- mean((prob_logit_val - y_true)^2)
+
+cat("Accuracy:", round(acc_logit, 4), "\n")
+cat("AUC:", round(auc(roc_logit), 4), "\n")
+cat("MSE:", round(mse_logit, 4), "\n\n")
+print(conf_logit)
+```
+
+### MODEL 2: DECISION TREE
+```{r}
+cat("\n=== DECISION TREE ===\n")
+model_tree <- rpart(Cancer ~ ., data = train_subset, 
+                    method = "class",
+                    control = rpart.control(cp = 0.01, minsplit = 20))
+
+# Predictions
+prob_tree_val <- predict(model_tree, newdata = val_set, type = "prob")[, 2]
+pred_tree_val <- predict(model_tree, newdata = val_set, type = "class")
+
+# Evaluation
+conf_tree <- table(Predicted = pred_tree_val, Actual = val_set$Cancer)
+acc_tree <- sum(diag(conf_tree)) / sum(conf_tree)
+roc_tree <- roc(val_set$Cancer, prob_tree_val, levels = c("Benign", "Malignant"))
+
+# MSE
+y_true <- ifelse(val_set$Cancer == "Malignant", 1, 0)
+mse_tree <- mean((prob_tree_val - y_true)^2)
+
+cat("Accuracy:", round(acc_tree, 4), "\n")
+cat("AUC:", round(auc(roc_tree), 4), "\n")
+cat("MSE:", round(mse_tree, 4), "\n\n")
+print(conf_tree)
+```
+
+### MODEL 3: RANDOM FOREST
+```{r}
+cat("\n=== RANDOM FOREST ===\n")
+model_rf <- randomForest(Cancer ~ ., data = train_subset,
+                        ntree = 500,
+                        mtry = sqrt(ncol(train_subset) - 1),
+                        importance = TRUE)
+
+# Predictions
+prob_rf_val <- predict(model_rf, newdata = val_set, type = "prob")[, 2]
+pred_rf_val <- predict(model_rf, newdata = val_set, type = "class")
+
+# Evaluation
+conf_rf <- table(Predicted = pred_rf_val, Actual = val_set$Cancer)
+acc_rf <- sum(diag(conf_rf)) / sum(conf_rf)
+roc_rf <- roc(val_set$Cancer, prob_rf_val, levels = c("Benign", "Malignant"))
+
+# MSE
+y_true <- ifelse(val_set$Cancer == "Malignant", 1, 0)
+mse_rf <- mean((prob_rf_val - y_true)^2)
+
+cat("Accuracy:", round(acc_rf, 4), "\n")
+cat("AUC:", round(auc(roc_rf), 4), "\n")
+cat("MSE:", round(mse_rf, 4), "\n\n")
+print(conf_rf)
+
+# Variable importance
+cat("\nTop 10 Important Variables:\n")
+importance_df <- data.frame(
+  Variable = rownames(importance(model_rf)),
+  MeanDecreaseGini = importance(model_rf)[, "MeanDecreaseGini"]
+) %>% arrange(desc(MeanDecreaseGini))
+print(head(importance_df, 10))
+```
+
+### MODEL 4: XGBOOST
+```{r}
+cat("\n=== XGBOOST ===\n")
+
+# Prepare numeric matrix for XGBoost
+prep_xgb_data <- function(df, target_col = NULL) {
+  if (!is.null(target_col)) {
+    y <- as.numeric(df[[target_col]]) - 1  # 0/1 encoding
+    X <- df %>% select(-all_of(target_col))
+  } else {
+    y <- NULL
+    X <- df
+  }
+  
+  # Convert factors to dummy variables
+  X_numeric <- model.matrix(~ . - 1, data = X)
+  
+  if (!is.null(y)) {
+    return(list(X = X_numeric, y = y))
+  } else {
+    return(X_numeric)
+  }
+}
+
+train_xgb <- prep_xgb_data(train_subset, "Cancer")
+val_xgb <- prep_xgb_data(val_set, "Cancer")
+
+dtrain <- xgb.DMatrix(data = train_xgb$X, label = train_xgb$y)
+dval <- xgb.DMatrix(data = val_xgb$X, label = val_xgb$y)
+
+model_xgb <- xgboost(
+  data = dtrain,
+  nrounds = 100,
+  objective = "binary:logistic",
+  eta = 0.1,
+  max_depth = 6,
+  subsample = 0.8,
+  colsample_bytree = 0.8,
+  eval_metric = "auc",
+  verbose = 0
+)
+
+# Predictions
+prob_xgb_val <- predict(model_xgb, dval)
+pred_xgb_val <- factor(ifelse(prob_xgb_val > 0.5, "Malignant", "Benign"),
+                       levels = c("Benign", "Malignant"))
+
+# Evaluation
+conf_xgb <- table(Predicted = pred_xgb_val, Actual = val_set$Cancer)
+acc_xgb <- sum(diag(conf_xgb)) / sum(conf_xgb)
+roc_xgb <- roc(val_set$Cancer, prob_xgb_val, levels = c("Benign", "Malignant"))
+
+# MSE
+y_true <- ifelse(val_set$Cancer == "Malignant", 1, 0)
+mse_xgb <- mean((prob_xgb_val - y_true)^2)
+
+cat("Accuracy:", round(acc_xgb, 4), "\n")
+cat("AUC:", round(auc(roc_xgb), 4), "\n")
+cat("MSE:", round(mse_xgb, 4), "\n\n")
+print(conf_xgb)
+```
+## VARIABLE IMPORTANCE
+```{r}
+# LOG REG MODEL IMPORTANCE
+coef_df <- data.frame(Variable = names(coef(model_logit))[-1],
+                      Coefficient = coef(model_logit)[-1],
+                      odds = exp(coef(model_logit)[-1])) |>
+  arrange(desc(abs(Coefficient))) |>
+  head(10)
+
+ggplot(coef_df, aes(x = reorder(Variable, Coefficient), y = Coefficient)) +
+  geom_col(aes(fill = Coefficient > 0)) +
+  coord_flip() +
+  scale_fill_manual(values = c("darkseagreen", "indianred"), 
+                    labels = c("Decreases Cancer Risk", "Increases Cancer Risk")) +
+  labs(title = "Most Important Predictor Variables: LogReg Model",
+       x = "Variable", y = "Coefficient",
+       fill = "Effect") +
+  theme_minimal()
+
+# RF MODEL IMPORTANCE
+importance <- data.frame(Variable = rownames(importance(model_rf)),
+                         MeanDecreaseGini = importance(model_rf)[, "MeanDecreaseGini"]) |>
+  arrange(desc(MeanDecreaseGini)) |>
+  head(10)
+
+ggplot(importance_df, aes(x = reorder(Variable, MeanDecreaseGini), 
+                          y = MeanDecreaseGini)) +
+  geom_col(fill = "lightblue") +
+  coord_flip() +
+  labs(title = "Most Important Predictor Variables: Random Forest Model",
+       x = "Variable", y = "Mean Decrease in Gini Impurity") +
+  theme_minimal()
+
+## XGBOOST MODEL IMPORTANCE
+xg_imp <- xgb.importance(model = model_xgb)
+xgb.plot.importance(xg_imp, 
+                    top_n = 10, 
+                    main = "Most Important Predictor Variables: XGBoost Model")
+```
+
+
+## K FOLD CROSS VALIDATION
+```{r}
+library(mlr3)
+library(mlr3learners)
+
+train_encoded <- model.matrix(~ . - Cancer, data = train_final) %>% 
+  as.data.frame()
+train_encoded$Cancer <- train_final$Cancer
+
+cancer_tsk <- as_task_classif(train_encoded, target = "Cancer", positive = "Malignant")
+
+learner_logit <- lrn("classif.log_reg", predict_type = "prob")
+
+learner_tree <- lrn("classif.rpart", 
+                    predict_type = "prob",
+                    cp = 0.01,
+                    minsplit = 20)
+
+learner_rf <- lrn("classif.ranger",
+                  predict_type = "prob",
+                  num.trees = 500,
+                  mtry = round(sqrt(cancer_tsk$ncol - 1)))
+
+learner_xgb <- lrn("classif.xgboost",
+                   predict_type = "prob",
+                   nrounds = 100,
+                   eta = 0.1,
+                   max_depth = 6,
+                   subsample = 0.8,
+                   colsample_bytree = 0.8)
+
+models <- list(
+  "Logistic" = learner_logit,
+  "Tree" = learner_tree,
+  "RandomForest" = learner_rf,
+  "XGBoost" = learner_xgb
+)
+
+set.seed(101)
+rsmp_cv10 <- rsmp("cv", folds = 10)
+rrs <- list()
+
+for(i in names(models)) {
+  cat("Training:", i, "\n")
+  rr <- resample(task = cancer_tsk,
+                     learner = models[[i]],
+                     resampling = rsmp_cv10)
+  rrs[[i]] <- rr
+  accuracy <- rr$aggregate(msr("classif.acc"))
+  auc <- rr$aggregate(msr("classif.auc"))
+  err <- rr$aggregate(msr("classif.ce"))
+  cat("  Accuracy:", accuracy, "\n")
+  cat("  AUC:", auc, "\n")
+  cat("  Mean Error:", err, "\n")
+}
+
+summary_table <- data.frame(
+  Model = names(rrs),
+  Accuracy = sapply(rrs, function(x) round(x$aggregate(msr("classif.acc")), 4)),
+  AUC = sapply(rrs, function(x) round(x$aggregate(msr("classif.auc")), 4)),
+  Error = sapply(rrs, function(x) round(x$aggregate(msr("classif.ce")), 4))
+)
+```
+
+## MODEL COMPARISON
+```{r}
+library(mlr3learners)
+results <- data.frame(
+  Model = c("Logistic Regression", "Decision Tree", "Random Forest", "XGBoost"),
+  Accuracy = c(acc_logit, acc_tree, acc_rf, acc_xgb),
+  AUC = c(auc(roc_logit), auc(roc_tree), auc(roc_rf), auc(roc_xgb))
+) %>% arrange(desc(AUC))
+
+print(results)
+
+# Plot ROC curves
+plot(roc_logit, col = "red", main = "ROC Curves Comparison")
+plot(roc_tree, col = "blue", add = TRUE)
+plot(roc_rf, col = "green", add = TRUE)
+plot(roc_xgb, col = "purple", add = TRUE)
+legend("bottomright", 
+       legend = c("Logistic", "Tree", "Random Forest", "XGBoost"),
+       col = c("red", "blue", "green", "purple"), 
+       lwd = 2)
+
+scores <- data.frame()
+for(i in names(rrs)) {
+  s <- rrs[[i]]$score(measures = msrs(c("classif.acc", "classif.ce", "classif.auc")))
+  s$Model <- i
+  scores <- rbind(scores, s)
+}
+
+# PLOT ACCURACY COMPARISON
+ggplot(scores, aes(x = Model, y = classif.acc, fill = Model)) +
+  geom_boxplot() +
+  labs(title = "CV Accuracy by Model",
+       x = "Model",
+       y = "Accuracy") +
+  theme_minimal() 
+
+# PLOT ERROR COMPARISON
+ggplot(scores, aes(x = Model, y = classif.ce, fill = Model)) +
+  geom_boxplot() +
+  labs(title = "CV Mean Error by Model",
+       x = "Model",
+       y = "Classification Error") +
+  theme_minimal() 
+
+
+```
+
+## WRITE CSV FILES
+```{r}
+# 1. LOGISTIC REGRESSION SUBMISSION
+
+cat("=== LOGISTIC REGRESSION ===\n")
+
+model_logit_full <- glm(Cancer ~ ., 
+                        data = train_final, 
+                        family = binomial)
+
+prob_test_logit <- predict(model_logit_full, newdata = test_final, type = "response")
+pred_test_logit <- ifelse(prob_test_logit > 0.5, "Malignant", "Benign")
+
+submission_logit <- data.frame(
+  ID = test$ID,
+  Cancer = pred_test_logit
+)
+
+write_csv(submission_logit, "submission_logistic.csv")
+cat("  Predictions:", table(pred_test_logit), "\n\n")
+
+# 2. RANDOM FOREST SUBMISSION
+cat("=== RANDOM FOREST ===\n")
+
+model_rf_full <- randomForest(Cancer ~ ., 
+                              data = train_final,
+                              ntree = 500,
+                              mtry = sqrt(ncol(train_final) - 1),
+                              importance = TRUE)
+
+prob_test_rf <- predict(model_rf_full, newdata = test_final, type = "prob")[, 2]
+pred_test_rf <- predict(model_rf_full, newdata = test_final, type = "class")
+
+submission_rf <- data.frame(
+  ID = test$ID,
+  Cancer = pred_test_rf
+)
+
+write_csv(submission_rf, "submission_rf.csv")
+cat("  Predictions:", table(pred_test_rf), "\n\n")
+
+# 3. XGBOOST SUBMISSION
+cat("=== XGBOOST ===\n")
+
+# Prepare data function
+prep_xgb_data <- function(df, target_col = NULL) {
+  if (!is.null(target_col)) {
+    y <- as.numeric(df[[target_col]]) - 1
+    X <- df %>% select(-all_of(target_col))
+  } else {
+    y <- NULL
+    X <- df
+  }
+  
+  X_numeric <- model.matrix(~ . - 1, data = X)
+  
+  if (!is.null(y)) {
+    return(list(X = X_numeric, y = y))
+  } else {
+    return(X_numeric)
+  }
+}
+
+train_xgb_full <- prep_xgb_data(train_final, "Cancer")
+dtrain_full <- xgb.DMatrix(data = train_xgb_full$X, label = train_xgb_full$y)
+
+model_xgb_full <- xgboost(
+  data = dtrain_full,
+  nrounds = 100,
+  objective = "binary:logistic",
+  eta = 0.1,
+  max_depth = 6,
+  subsample = 0.8,
+  colsample_bytree = 0.8,
+  eval_metric = "auc",
+  verbose = 0
+)
+
+test_xgb_matrix <- prep_xgb_data(test_final)
+dtest <- xgb.DMatrix(data = test_xgb_matrix)
+prob_test_xgb <- predict(model_xgb_full, dtest)
+pred_test_xgb <- ifelse(prob_test_xgb > 0.5, "Malignant", "Benign")
+
+submission_xgb <- data.frame(
+  ID = test$ID,
+  Cancer = pred_test_xgb
+)
+
+write_csv(submission_xgb, "submission_xgb.csv")
+cat("  Predictions:", table(pred_test_xgb), "\n\n")
+
+# 4. ENSEMBLE SUBMISSION
+cat("=== ENSEMBLE (RF + XGBoost Average) ===\n")
+
+# Average the probabilities from RF and XGBoost
+prob_test_ensemble <- (prob_test_rf + prob_test_xgb) / 2
+pred_test_ensemble <- ifelse(prob_test_ensemble > 0.5, "Malignant", "Benign")
+
+submission_ensemble <- data.frame(
+  ID = test$ID,
+  Cancer = pred_test_ensemble
+)
+
+write_csv(submission_ensemble, "submission_ensemble.csv")
+cat("  Predictions:", table(pred_test_ensemble), "\n\n")
+
+# 5. SUMMARY
+# Compare prediction distributions
+comparison <- data.frame(
+  Model = c("Logistic", "Random Forest", "XGBoost", "Ensemble"),
+  Benign = c(
+    sum(pred_test_logit == "Benign"),
+    sum(pred_test_rf == "Benign"),
+    sum(pred_test_xgb == "Benign"),
+    sum(pred_test_ensemble == "Benign")
+  ),
+  Malignant = c(
+    sum(pred_test_logit == "Malignant"),
+    sum(pred_test_rf == "Malignant"),
+    sum(pred_test_xgb == "Malignant"),
+    sum(pred_test_ensemble == "Malignant")
+  )
+)
+
+comparison <- comparison %>%
+  mutate(
+    Total = Benign + Malignant,
+    Pct_Malignant = round(100 * Malignant / Total, 2)
+  )
+
+print(comparison)
+```
